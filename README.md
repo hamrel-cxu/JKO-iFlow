@@ -1,6 +1,8 @@
 # JKO-iFlow
 
-Official implementation of "Invertible normalizing flow neural networks by JKO scheme". Please direct inquiries to cxu310@gatech.edu.
+Official implementation of "Normalizing flow neural networks by JKO scheme" [[arxiv](https://arxiv.org/abs/2212.14424)] [[NeurIPS23](https://openreview.net/forum?id=ZQMlfNijY5)]. 
+
+Please direct inquiries regarding implementation to cxu310@gatech.edu. 
 
 ## Pre-requisites
 ```
