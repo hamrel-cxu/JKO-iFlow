@@ -33,3 +33,9 @@ python main.py --JKO_config configs/JKO_tree.yaml
     url={https://openreview.net/forum?id=ZQMlfNijY5}
 }
 ```
+## Animation 
+We show below the forward (data to noise) and backward (noise to data) process over time.
+<p align="center">
+  <img src="https://github.com/hamrel-cxu/JKO-iFlow/blob/main/animation.gif" width="800" height="450" />
+</p>
+
