@@ -7,7 +7,7 @@ CNF:
   vfield_style: 'tree' 
 
 training:
-  ntr: 500000
+  ntr: 2000000
   nte: 50000
   add_diffuse: None
   load_checkpoint: True
@@ -15,7 +15,7 @@ training:
   batch_size: 2000 
   block_idxes: [1,2,3,4,5,6,7,8]
   clip_grad: True
-  tot_iters: 10000
+  tot_iters: 20000
   lr: 0.0001
   sigma0: 0.02
 

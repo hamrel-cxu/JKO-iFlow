@@ -11,37 +11,20 @@ import torch.nn as nn
 import torchdiffeq as tdeq
 import time
 from PIL import Image
+from tqdm import tqdm
 from argparse import Namespace
 from scipy.stats import gaussian_kde
+from torch.distributions import MultivariateNormal
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 num_gpu = torch.cuda.device_count()
 mult_gpu = False if num_gpu < 2 else True
-
-def inf_train_gen(img_name, data_size):
-    def gen_data_from_img(image_mask, train_data_size):
-        def sample_data(train_data_size):
-            inds = np.random.choice(
-                int(probs.shape[0]), int(train_data_size), p=probs)
-            m = means[inds] 
-            samples = np.random.randn(*m.shape) * std + m 
-            return samples
-        img = image_mask
-        h, w = img.shape
-        xx = np.linspace(-4, 4, w)
-        yy = np.linspace(-4, 4, h)
-        xx, yy = np.meshgrid(xx, yy)
-        xx = xx.reshape(-1, 1)
-        yy = yy.reshape(-1, 1)
-        means = np.concatenate([xx, yy], 1) # (h*w, 2)
-        img = img.max() - img
-        probs = img.reshape(-1) / img.sum() 
-        std = np.array([8 / w / 2, 8 / h / 2])
-        full_data = sample_data(train_data_size)
-        return full_data
-    image_mask = np.array(Image.open(f'{img_name}.png').rotate(
-        180).transpose(0).convert('L'))
-    dataset = gen_data_from_img(image_mask, data_size)
-    return dataset
+torch.manual_seed(1103); np.random.seed(1103)
+def inf_train_gen(data_size):
+    mu = torch.zeros(2).to(device)
+    cov = torch.tensor([[7., 5], [5, 7.]]).to(device)
+    dist = MultivariateNormal(mu, cov)
+    data = dist.sample((data_size,)).to(device)
+    return data
 
 def get_e_ls(out, num_e):
     e_ls = []
@@ -285,39 +268,22 @@ def check_inv_err(self, nsamples = 500):
         print(f'--Test absolute MSE ||X-Finv(F(X))|| is {abs_err.item():.2e}')
     return abs_err.item()
 
-def move_over_blocks(self, reverse = False, nte = 1000):
+def move_over_blocks(self):
     with torch.no_grad():
-        if reverse:
-            Xtest = torch.randn(nte, Xdim_flow).to(device)
-        else:
-            Xtest = self.X_test.to(device)
-        if block_id > 1 and reverse is False:
-            Zhat_ls_prev, Zout = [Xtest], Xtest
-            for self_mod in self_ls_prev:
-                Zout, _ = FlowNet_forward(Zout, self_mod.CNF, self_mod.ls_args_CNF,
-                                          self_mod.block_now, reverse = False,
-                                          return_full = False)
-                Zhat_ls_prev.append(Zout)
-            Xtest = Zout
-        Zhat_ls, _ = FlowNet_forward(Xtest, self.CNF, self.ls_args_CNF,
+        Xtest = self.X_test.to(device)
+        Zhat_ls_prev = [Xtest.clone()]
+        for self_mod in self_ls_prev:
+            Xtest, _ = FlowNet_forward(Xtest, self_mod.CNF, self_mod.ls_args_CNF,
+                                        self_mod.block_now, reverse = False,
+                                        return_full = False)
+            Zhat_ls_prev.append(Xtest.clone())
+        Zhat, _ = FlowNet_forward(Xtest, self.CNF, self.ls_args_CNF,
                                      self.block_now,
-                                     reverse = reverse,
-                                     return_full = True)
-        if block_id > 1 and reverse is True:
-            Xhat_ls_prev, Xout = [], Zhat_ls[-1]
-            for self_mod in reversed(self_ls_prev):
-                Xout, _ = FlowNet_forward(Xout, self_mod.CNF, self_mod.ls_args_CNF,
-                                          self_mod.block_now, reverse = True,
-                                          return_full = False)
-                Xhat_ls_prev.append(Xout)
-        if mult_gpu:
-            ids = range(len(Zhat_ls))
-        else:
-            ids = torch.linspace(0, Zhat_ls.shape[0]-1, self.block_now+1).long()
-        Zhat_ls = [Zhat_ls[i] for i in ids]
-        if block_id > 1:
-            Zhat_ls = Zhat_ls_prev + Zhat_ls[1:] if reverse is False else Zhat_ls + Xhat_ls_prev
-    return Zhat_ls 
+                                     reverse = False,
+                                     return_full = False)
+        Zhat_ls_prev.append(Zhat)
+        Z_traj = torch.stack(Zhat_ls_prev)
+    return Z_traj 
 
 def plot_W2_movement(self, num_fig = 500):
     with torch.no_grad():
@@ -488,7 +454,7 @@ def helper(on = True):
                 self_mod.CNF.odefunc.div_bf = False
 
 parser = argparse.ArgumentParser(description='Load hyperparameters from a YAML file.')
-parser.add_argument('--JKO_config', default = 'configs/JKO_tree.yaml', type=str, help='Path to the YAML file')
+parser.add_argument('--JKO_config', default = 'configs/2d_gaussian.yaml', type=str, help='Path to the YAML file')
 args_parsed = parser.parse_args()
 with open(args_parsed.JKO_config, 'r') as file:
     args_yaml = yaml.safe_load(file)
@@ -499,7 +465,7 @@ if __name__ == '__main__':
     for block_id in block_idxes:
         vfield_style = args_yaml['CNF']['vfield_style']
         folder_suffix = args_yaml['eval']['folder_suffix']
-        master_dir = f'results/JKO_{vfield_style}{folder_suffix}'
+        master_dir = f'results/2d_gaussian'
         os.makedirs(master_dir, exist_ok=True)
         prefix = 'block' 
         common_name = f'{prefix}{block_id}'
@@ -513,10 +479,8 @@ if __name__ == '__main__':
         Xdim_flow = args_yaml['data']['Xdim_flow'] # After encoding
         batch_size = args_yaml['training']['batch_size'] 
         ntr, nte = args_yaml['training']['ntr'], args_yaml['training']['nte']
-        xraw = inf_train_gen(f'img_{vfield_style}', ntr)
-        xte = inf_train_gen(f'img_{vfield_style}', nte)
-        xraw = torch.from_numpy(xraw).float().to(device)
-        xte = torch.from_numpy(xte).float().to(device)
+        xraw = inf_train_gen(ntr)
+        xte = inf_train_gen(nte)
         self.X_test = xte
         if block_id > 1:
             common_name_data = f'{prefix}{block_id-1}'
@@ -601,10 +565,11 @@ if __name__ == '__main__':
             args_training.tot_iters = args_yaml['training']['tot_iters']
             print(f'############ Train until {args_training.tot_iters} batches ############')
         print('########################## Start training ##########################')
-        while args_training.iter_start < args_training.tot_iters:
-            i = args_training.iter_start
+        data_file = {'p0': xte.cpu().detach().numpy()}
+        data_name = os.path.join(master_dir, 'pushed_data.pth')
+        for i in tqdm(range(args_training.iter_start, args_training.tot_iters)):
+            args_training.iter_start = i+1
             start = time.time()
-            on_off(self, on = False) 
             xsub = next(train_loader_raw_tr)[0]
             if block_id == 1 and 'add_diffuse' in args_yaml['training']:
                 xsub = add_diffuse(xsub)
@@ -617,7 +582,6 @@ if __name__ == '__main__':
             if args_yaml['training']['clip_grad']:
                 _ = torch.nn.utils.clip_grad_norm_(self.CNF.parameters(), 1.0)
             optimizer.step()
-            args_training.iter_start += 1 
             current_loss = [loss.item(), loss_W2.item(), loss_V.item(), loss_div.item(), loss_Jac.item()]
             self.loss_at_block.append(current_loss)
             if args_training.iter_start % 100 == 0:
@@ -630,71 +594,38 @@ if __name__ == '__main__':
                      'ls_args_CNF': self.ls_args_CNF,
                      'loss_at_block': self.loss_at_block}
             if i % viz_freq == 0 or i == max_iter:
+                i_suff = f'{int(100*(args_training.iter_start/args_training.tot_iters))}_percent'
                 print(f'######### Evaluate at iter {i+1}')    
-                on_off(self, on = True)
-                abs_err = check_inv_err(self, nsamples = 1000)
-                X_traj = move_over_blocks(self, reverse = True, nte = nte)
-                Z_traj = move_over_blocks(self, reverse = False, nte = nte)
-                X = self.X_test.clone().cpu().numpy()
-                Zhat = Z_traj[-1].cpu().numpy()
-                Xhat = X_traj[-1].cpu().numpy()
-                Z = torch.randn_like(Z_traj[-1]).cpu().numpy()
-                fig, ax = plt.subplots(1,4, figsize = (20,5))
-                s=0.01
-                ax[0].scatter(X[:,0], X[:,1], s = s)
-                ax[1].scatter(Xhat[:,0], Xhat[:,1], s = s)
-                ax[2].scatter(Z[:,0], Z[:,1], s = s)
-                ax[3].scatter(Zhat[:,0], Zhat[:,1], s = s)
-                ax[0].set_title('X')
-                ax[1].set_title('Xhat')
-                ax[2].set_title('Z')
-                ax[3].set_title('Zhat')
-                for a in [ax[2], ax[3]]:
-                    a.set_xlim([-4,4])
-                    a.set_ylim([-4,4])
+                torch.save(sdict, filepath)
+                ### Plot pushed data and save them
+                Z_traj = move_over_blocks(self)
+                print(f'At {i_suff}, {(Z_traj[-1].mean(axis=0), torch.cov(Z_traj[-1].T))}')
+                ncol = Z_traj.shape[0]
+                fig, ax = plt.subplots(1, ncol, figsize=(ncol*4, 4), sharex=True, sharey=True)
+                for j in range(ncol):
+                    Znow = Z_traj[j].cpu().detach().numpy()
+                    ax[j].scatter(Znow[:, 0], Znow[:, 1], s=0.005)
+                    ax[j].set_title(f'$p_{i}$', fontsize=26)
                 fig.tight_layout()
-                filename_gen = filename+f'_XZhat_iter{args_training.iter_start}.png'
-                fig.savefig(filename_gen)
-                fig_W2, fig_W2_all, W2_sqr = plot_W2_movement(self, num_fig = 1000)
-                filename_W2 = filename+f'_W2movement_iter{args_training.iter_start}.png'
-                fig_W2.savefig(filename_W2)
-                if block_id > 1:
-                    filename_W2_all = filename+f'_W2movement_all_iter{args_training.iter_start}.png'
-                    fig_W2_all.savefig(filename_W2_all)
+                fig.savefig(os.path.join(directory, f'XtoZ_{i_suff}.png'))
                 args_for_viz = Namespace(block_now = f'JKO discrete block{block_id}')
                 fig_loss_block = plt_losses_at_block(self.loss_at_block, args_for_viz) # Loss at this block
-                filename_loss = filename+f'_loss_iter{args_training.iter_start}.png'
-                fig_loss_block.savefig(filename_loss)
+                fig_loss_block.savefig(os.path.join(directory, f'loss_{i_suff}.png'))
+                if i > 0:
+                    data_file[f'p1_{i_suff}'] = Z_traj[-1].cpu().detach().numpy()
                 plt.close('all')
-                on_off(self, on = False)
-                torch.cuda.empty_cache()
-                if abs_err > 1000 and i > 100:
-                    raise ValueError('Inverse error is too large, something is wrong')
-                torch.save(sdict, filepath)
-                helper(on = True)
-                dlogpx_full = 0
-                Xtest = self.X_test.clone().to(device)
-                for self_mod in self_ls_prev + [self]:
-                    dlogpx = 0
-                    predz, dlogpx_, _ = self_mod.CNF(Xtest, args_CNF_, reverse = False, test = False, mult_gpu = mult_gpu)
-                    Xtest = predz if mult_gpu else predz[-1]
-                    dlogpx += dlogpx_ if mult_gpu else dlogpx_[-1]
-                    dlogpx_full += dlogpx
-                logrhoXtoZ = dlogpx_full.mean()
-                constant = -Xdim_flow/2 * math.log(2*math.pi)
-                logrhoZ = -l2_norm_sqr(Xtest) + constant
-                logrhoX = logrhoZ - logrhoXtoZ
-                print(f'Test NLL is {-logrhoX.item()} at iter {i+1}')
-                helper(on = False)
-            if i == max_iter:
-                on_off(self, on = True)
-                nmax = 10000
-                X_traj = move_over_blocks(self, reverse = True, nte=nmax)
-                Xhat = X_traj[-1].cpu().numpy()
-                mmd_dict = get_MMD(X, Xhat, nmax = nmax)
-                print(mmd_dict)
-                on_off(self, on = False)
-                Xtrain_pushed = push_samples_forward(train_loader_raw, self)
-                print(f'##### Shape of Xtrain_pushed is {Xtrain_pushed.shape} #####')
-                filename_data = filepath.split('.pth')[0] + '_Xpushed.pkl'
-                pickle.dump(Xtrain_pushed, open(filename_data, 'wb'))
+            torch.save(data_file, data_name)
+        # Load and save
+        data = torch.load(data_name)
+        results = [v for k, v in data.items()]
+        ncol = len(results)
+        fig, ax = plt.subplots(1, ncol, figsize=(ncol*4, 4), sharex=True, sharey=True)
+        for i, data in enumerate(results):
+            ax[i].scatter(data[:, 0], data[:, 1], s=0.005)
+            title = f'$p_0$' if i == 0 else f'$p_1$ {10*i}% steps'
+            print(f'####### For {title}')
+            print(data.shape, data.mean(axis=0), np.cov(data.T))
+            ax[i].set_title(title, fontsize=26)
+        fig.tight_layout()
+        fig.savefig((os.path.join(directory, 'pushed_data.png')), bbox_inches='tight', pad_inches=0.1)
+        plt.close(fig)

@@ -12,6 +12,7 @@
 *.DS_Store
 *.pkl
 *.pyc
+*.png
 data/*
 datasets/*
 main_ref.py
